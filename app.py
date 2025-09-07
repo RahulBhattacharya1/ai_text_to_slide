@@ -4,9 +4,69 @@ import math
 import streamlit as st
 
 # Rate-limit knobs
-COOLDOWN_SECONDS = 30        # one call every 30 seconds per session
-DAILY_LIMIT      = 40        # max generations per session per day
-HOURLY_SHARED_CAP = 250      # optional global cap across all users; set 0 to disable
+# === Runtime budget/limits loader (auto-updates from GitHub) ===
+
+import os, time, types, urllib.request
+import streamlit as st
+
+# Raw URL of your budget.py in the shared repo (override via env if needed)
+BUDGET_URL = os.getenv(
+    "BUDGET_URL",
+    "https://raw.githubusercontent.com/RahulBhattacharya1/shared_config/main/budget.py",
+)
+
+# Safe defaults if the fetch fails
+_BUDGET_DEFAULTS = {
+    "COOLDOWN_SECONDS": 30,
+    "DAILY_LIMIT": 40,
+    "HOURLY_SHARED_CAP": 250,
+    "DAILY_BUDGET": 1.00,
+    "EST_COST_PER_GEN": 1.00,
+    "VERSION": "fallback-local",
+}
+
+def _fetch_remote_budget(url: str) -> dict:
+    mod = types.ModuleType("budget_remote")
+    with urllib.request.urlopen(url, timeout=5) as r:
+        code = r.read().decode("utf-8")
+    exec(compile(code, "budget_remote", "exec"), mod.__dict__)
+    cfg = {}
+    for k in _BUDGET_DEFAULTS.keys():
+        cfg[k] = getattr(mod, k, _BUDGET_DEFAULTS[k])
+    return cfg
+
+def get_budget(ttl_seconds: int = 300) -> dict:
+    """Fetch and cache remote budget in session state with a TTL."""
+    now = time.time()
+    cache = st.session_state.get("_budget_cache")
+    ts = st.session_state.get("_budget_cache_ts", 0)
+
+    if cache and (now - ts) < ttl_seconds:
+        return cache
+
+    try:
+        cfg = _fetch_remote_budget(BUDGET_URL)
+    except Exception:
+        cfg = _BUDGET_DEFAULTS.copy()
+
+    # Allow env overrides if you want per-deploy tuning
+    cfg["DAILY_BUDGET"] = float(os.getenv("DAILY_BUDGET", cfg["DAILY_BUDGET"]))
+    cfg["EST_COST_PER_GEN"] = float(os.getenv("EST_COST_PER_GEN", cfg["EST_COST_PER_GEN"]))
+
+    st.session_state["_budget_cache"] = cfg
+    st.session_state["_budget_cache_ts"] = now
+    return cfg
+
+# Load once (respects TTL); you can expose a "Refresh config" button to clear cache
+_cfg = get_budget(ttl_seconds=300)
+
+COOLDOWN_SECONDS  = int(_cfg["COOLDOWN_SECONDS"])
+DAILY_LIMIT       = int(_cfg["DAILY_LIMIT"])
+HOURLY_SHARED_CAP = int(_cfg["HOURLY_SHARED_CAP"])
+DAILY_BUDGET      = float(_cfg["DAILY_BUDGET"])
+EST_COST_PER_GEN  = float(_cfg["EST_COST_PER_GEN"])
+CONFIG_VERSION    = str(_cfg.get("VERSION", "unknown"))
+# === End runtime loader ===
 
 def init_rate_limit_state():
     ss = st.session_state
@@ -21,27 +81,32 @@ def init_rate_limit_state():
         ss["rl_calls_today"] = 0
 
 def can_call_now():
-    """Returns (allowed: bool, reason: str, seconds_left: int)"""
     init_rate_limit_state()
     ss = st.session_state
     now = time.time()
 
-    # Cooldown check
+    # Cooldown guard
     remaining = int(max(0, ss["rl_last_ts"] + COOLDOWN_SECONDS - now))
     if remaining > 0:
         return (False, f"Please wait {remaining}s before the next generation.", remaining)
 
-    # Daily session cap
+    # === NEW: Daily budget guardrail ===
+    # Uses shared values loaded at runtime: DAILY_BUDGET and EST_COST_PER_GEN
+    est_spend = ss["rl_calls_today"] * EST_COST_PER_GEN
+    if est_spend >= DAILY_BUDGET:
+        return (False, f"Daily cost limit reached (${DAILY_BUDGET:.2f}). Try again tomorrow.", 0)
+
+    # Per-session daily cap (still keeps your old guard)
     if ss["rl_calls_today"] >= DAILY_LIMIT:
         return (False, f"Daily limit reached ({DAILY_LIMIT} generations). Try again tomorrow.", 0)
 
-    # Shared hourly cap (optional)
+    # Optional shared hourly cap
     if HOURLY_SHARED_CAP > 0:
         bucket = _hour_bucket()
         counters = _shared_hourly_counters()
         used = counters.get(bucket, 0)
         if used >= HOURLY_SHARED_CAP:
-            return (False, "Hourly capacity reached for this app. Please try in a little while.", 0)
+            return (False, "Hourly capacity reached. Please try later.", 0)
 
     return (True, "", 0)
 
@@ -388,12 +453,22 @@ with st.sidebar:
     init_rate_limit_state()
     ss = st.session_state
     st.markdown("**Usage limits**")
-    st.write(f"Today: {ss['rl_calls_today']} / {DAILY_LIMIT} generations")
+    st.write(f"<span style='font-size:0.9rem'>Today: {ss['rl_calls_today']} / {DAILY_LIMIT} generations</span>",unsafe_allow_html=True)
     if HOURLY_SHARED_CAP > 0:
         counters = _shared_hourly_counters()
         used = counters.get(_hour_bucket(), 0)
-        st.write(f"Hour capacity: {used} / {HOURLY_SHARED_CAP}")
+        st.write(f"<span style='font-size:0.9rem'>Hour capacity: {used} / {HOURLY_SHARED_CAP}</span>",unsafe_allow_html=True)
     remaining = int(max(0, ss["rl_last_ts"] + COOLDOWN_SECONDS - time.time()))
+    est_spend = ss['rl_calls_today'] * EST_COST_PER_GEN
+    st.markdown(
+        f"<span style='font-size:0.9rem'>Budget: &#36;{est_spend:.2f} / &#36;{DAILY_BUDGET:.2f}</span><br>"
+        f"<span style='font-size:0.8rem; opacity:0.8'>Config version: {CONFIG_VERSION}</span>",unsafe_allow_html=True
+    )
+    
+    # Optional: warning if fallback defaults are in use
+    if CONFIG_VERSION == "fallback-local":
+        st.warning("Using fallback defaults — couldn’t fetch remote budget.py")
+
     if remaining > 0:
         st.progress(min(1.0, (COOLDOWN_SECONDS - remaining) / COOLDOWN_SECONDS))
         st.caption(f"Cooldown: {remaining}s")
