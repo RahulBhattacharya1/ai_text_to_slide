@@ -1,4 +1,4 @@
-# AI Text → Slides (Streamlit, no Hugging Face)
+# AI Text → Slides
 
 Turn a paragraph into a slide deck outline and download as PPTX. Uses OpenAI API.
 
@@ -9,6 +9,6 @@ Turn a paragraph into a slide deck outline and download as PPTX. Uses OpenAI API
    OPENAI_API_KEY = sk-...
 4) Click "Rerun" if needed, then generate decks.
 
-## Local run (optional)
+## Local run
 pip install -r requirements.txt
 streamlit run app.py
