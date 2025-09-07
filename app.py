@@ -16,7 +16,7 @@ except Exception:
 from utils_pptx import deck_to_pptx_bytes
 
 # ======================= App Config =======================
-st.set_page_config(page_title="AI Text → Slides (Portfolio-grade)", page_icon="📑", layout="wide")
+st.set_page_config(page_title="AI Text → Slides", page_icon="📑", layout="wide")
 
 # ======================= Data Models =======================
 # Hard constraints for portfolio rigor
@@ -304,7 +304,7 @@ def score_deck(dj: DeckJSON) -> Tuple[float, dict]:
     return round(final, 2), details
 
 # ======================= UI =======================
-st.title("AI Text → Slide Deck (Portfolio-grade)")
+st.title("AI Text → Slide Deck")
 
 with st.sidebar:
     st.subheader("Generator")
