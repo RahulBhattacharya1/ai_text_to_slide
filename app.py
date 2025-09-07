@@ -27,15 +27,31 @@ MIN_BULLETS = 3
 MAX_BULLETS = 5
 MAX_BULLET_WORDS = 14
 
-from typing import List
+from typing import List, Optional, Annotated
+from pydantic import BaseModel, Field, constr, field_validator
+
+MAX_TITLE_WORDS = 7
+MIN_CONTENT_SLIDES = 4
+MAX_CONTENT_SLIDES = 8
+MIN_BULLETS = 3
+MAX_BULLETS = 5
+MAX_BULLET_WORDS = 14
 
 class SlideModel(BaseModel):
-    title: constr(strip_whitespace=True, min_length=1) = Field(...)
+    title: constr(strip_whitespace=True, min_length=1)
     bullets: List[constr(strip_whitespace=True, min_length=1)] = Field(default_factory=list)
     notes: Optional[constr(strip_whitespace=True, min_length=1)] = None
 
+    @field_validator("bullets")
+    @classmethod
+    def clean_bullets(cls, v):
+        # normalize and drop empties
+        return [b.strip() for b in v if str(b).strip()]
+
+SlidesType = Annotated[List[SlideModel], Field(min_length=1, max_length=1 + MAX_CONTENT_SLIDES)]
+
 class DeckJSON(BaseModel):
-    slides: conlist(SlideModel, min_items=1) = Field(...)
+    slides: SlidesType
 
 @dataclass
 class Slide:
