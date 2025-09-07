@@ -1,3 +1,71 @@
+import time
+import datetime as dt
+import math
+import streamlit as st
+
+# Rate-limit knobs
+COOLDOWN_SECONDS = 30        # one call every 30 seconds per session
+DAILY_LIMIT      = 40        # max generations per session per day
+HOURLY_SHARED_CAP = 250      # optional global cap across all users; set 0 to disable
+
+def init_rate_limit_state():
+    ss = st.session_state
+    today = dt.date.today().isoformat()
+    if "rl_date" not in ss or ss["rl_date"] != today:
+        ss["rl_date"] = today
+        ss["rl_calls_today"] = 0
+        ss["rl_last_ts"] = 0.0
+    if "rl_last_ts" not in ss:
+        ss["rl_last_ts"] = 0.0
+    if "rl_calls_today" not in ss:
+        ss["rl_calls_today"] = 0
+
+def can_call_now():
+    """Returns (allowed: bool, reason: str, seconds_left: int)"""
+    init_rate_limit_state()
+    ss = st.session_state
+    now = time.time()
+
+    # Cooldown check
+    remaining = int(max(0, ss["rl_last_ts"] + COOLDOWN_SECONDS - now))
+    if remaining > 0:
+        return (False, f"Please wait {remaining}s before the next generation.", remaining)
+
+    # Daily session cap
+    if ss["rl_calls_today"] >= DAILY_LIMIT:
+        return (False, f"Daily limit reached ({DAILY_LIMIT} generations). Try again tomorrow.", 0)
+
+    # Shared hourly cap (optional)
+    if HOURLY_SHARED_CAP > 0:
+        bucket = _hour_bucket()
+        counters = _shared_hourly_counters()
+        used = counters.get(bucket, 0)
+        if used >= HOURLY_SHARED_CAP:
+            return (False, "Hourly capacity reached for this app. Please try in a little while.", 0)
+
+    return (True, "", 0)
+
+def record_successful_call():
+    ss = st.session_state
+    ss["rl_last_ts"] = time.time()
+    ss["rl_calls_today"] += 1
+
+    if HOURLY_SHARED_CAP > 0:
+        bucket = _hour_bucket()
+        counters = _shared_hourly_counters()
+        counters[bucket] = counters.get(bucket, 0) + 1
+
+@st.cache_resource
+def _shared_hourly_counters():
+    # In-memory dict shared by all sessions in this Streamlit process
+    # key: "YYYY-MM-DD-HH", value: int count
+    return {}
+
+def _hour_bucket(now=None):
+    now = now or dt.datetime.utcnow()
+    return now.strftime("%Y-%m-%d-%H")
+
+
 import json
 import re
 import textwrap
@@ -304,6 +372,7 @@ def score_deck(dj: DeckJSON) -> Tuple[float, dict]:
     return round(final, 2), details
 
 # ======================= UI =======================
+# ======= UI (with rate limiting) =======
 st.title("AI Text → Slide Deck")
 
 with st.sidebar:
@@ -315,47 +384,84 @@ with st.sidebar:
     max_tokens = st.slider("Max tokens (OpenAI)", 256, 2048, 900, 32)
     st.caption("Tip: Use Offline to demo your engineering logic without any API.")
 
+    # Optional: show per-session usage and shared hourly capacity
+    init_rate_limit_state()
+    ss = st.session_state
+    st.markdown("**Usage limits**")
+    st.write(f"Today: {ss['rl_calls_today']} / {DAILY_LIMIT} generations")
+    if HOURLY_SHARED_CAP > 0:
+        counters = _shared_hourly_counters()
+        used = counters.get(_hour_bucket(), 0)
+        st.write(f"Hour capacity: {used} / {HOURLY_SHARED_CAP}")
+    remaining = int(max(0, ss["rl_last_ts"] + COOLDOWN_SECONDS - time.time()))
+    if remaining > 0:
+        st.progress(min(1.0, (COOLDOWN_SECONDS - remaining) / COOLDOWN_SECONDS))
+        st.caption(f"Cooldown: {remaining}s")
+
 topic = st.text_area(
     "Enter topic or paragraph",
     height=160,
     placeholder="Generative AI for small retail: opportunities, risks, pilot plan, KPIs."
 )
 
+# Rate-limit check before enabling the button
+allowed, reason, _wait = can_call_now()
+
 col1, col2 = st.columns([1,1])
 with col1:
-    gen = st.button("Generate Slides", type="primary", disabled=not topic.strip())
+    gen = st.button(
+        "Generate Slides",
+        type="primary",
+        disabled=(not topic.strip()) or (not allowed)
+    )
 with col2:
-    st.write("")
+    if not allowed:
+        st.caption(reason)
 
 deck: Optional[Deck] = st.session_state.get("deck")
 
 if gen:
-    raw_json = None
-    try:
-        if provider == "OpenAI":
-            content = call_openai(topic.strip(), model=model, temperature=temp, max_tokens=max_tokens)
-        else:
-            # Offline generator returns a Python dict we serialize to string for uniform flow
-            content = json.dumps(generate_offline_deck_json(topic.strip()))
-
-        block = coerce_json_block(content)
+    # Double-check right before calling the provider
+    allowed, reason, _ = can_call_now()
+    if not allowed:
+        st.warning(reason)
+    else:
+        raw_json = None
         try:
-            dj = validate_json_strict(block)
-        except ValidationError:
-            # Attempt one auto-repair pass: parse loosely then coerce into schema
-            dj = DeckJSON.model_validate(json.loads(block))
-        # Enforce portfolio constraints regardless of provider
-        dj = enforce_constraints(dj)
-        deck = deckjson_to_deck(topic.strip(), brand, dj)
-        st.session_state["deck"] = deck
+            if provider == "OpenAI":
+                content = call_openai(
+                    topic.strip(),
+                    model=model,
+                    temperature=temp,
+                    max_tokens=max_tokens
+                )
+            else:
+                # Offline generator returns a Python dict; serialize for uniform handling
+                content = json.dumps(generate_offline_deck_json(topic.strip()))
 
-        # Evaluation
-        score, details = score_deck(dj)
-        st.session_state["deck_eval"] = (score, details)
+            block = coerce_json_block(content)
+            try:
+                dj = validate_json_strict(block)
+            except ValidationError:
+                # Attempt one auto-repair pass: parse loosely then coerce into schema
+                dj = DeckJSON.model_validate(json.loads(block))
 
-    except Exception as e:
-        st.error(f"Generation failed: {e}")
-        deck = None
+            # Enforce portfolio constraints regardless of provider
+            dj = enforce_constraints(dj)
+            deck = deckjson_to_deck(topic.strip(), brand, dj)
+            st.session_state["deck"] = deck
+
+            # Evaluation
+            score, details = score_deck(dj)
+            st.session_state["deck_eval"] = (score, details)
+
+            # Mark this call as successful for rate limits
+            record_successful_call()
+
+        except Exception as e:
+            st.error(f"Generation failed: {e}")
+            deck = None
+
 
 # ======================= Preview, QA, Export =======================
 eval_state = st.session_state.get("deck_eval")
@@ -403,3 +509,20 @@ if deck:
 
 else:
     st.info("Enter a topic and click Generate to create a deck.")
+
+init_rate_limit_state()
+ss = st.session_state
+
+st.markdown("**Usage limits**")
+st.write(f"Today: {ss['rl_calls_today']} / {DAILY_LIMIT} generations")
+if HOURLY_SHARED_CAP > 0:
+    counters = _shared_hourly_counters()
+    used = counters.get(_hour_bucket(), 0)
+    st.write(f"Hour capacity: {used} / {HOURLY_SHARED_CAP}")
+
+# Optional: show remaining cooldown visually
+remaining = int(max(0, ss["rl_last_ts"] + COOLDOWN_SECONDS - time.time()))
+if remaining > 0:
+    st.progress(min(1.0, (COOLDOWN_SECONDS - remaining) / COOLDOWN_SECONDS))
+    st.caption(f"Cooldown: {remaining}s")
+
