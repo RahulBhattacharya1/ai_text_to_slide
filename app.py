@@ -108,7 +108,7 @@ MAX_BULLET_WORDS = 14
 class SlideModel(BaseModel):
     title: constr(strip_whitespace=True, min_length=1)
     bullets: List[constr(strip_whitespace=True, min_length=1)] = Field(default_factory=list)
-    notes: Optional[constr(strip_whitespace=True, min_length=1)] = None
+    notes: Optional[str] = None
 
     @field_validator("bullets")
     @classmethod
