@@ -461,8 +461,8 @@ with st.sidebar:
     remaining = int(max(0, ss["rl_last_ts"] + COOLDOWN_SECONDS - time.time()))
     est_spend = ss['rl_calls_today'] * EST_COST_PER_GEN
     st.markdown(
-        f"<span style='font-size:0.9rem'>Budget: &#36;{est_spend:.2f} / &#36;{DAILY_BUDGET:.2f}</span><br>"
-        f"<span style='font-size:0.8rem; opacity:0.8'>Config version: {CONFIG_VERSION}</span>",unsafe_allow_html=True
+        f"<span style='font-size:0.9rem'>Budget: &#36;{est_spend:.2f} / &#36;{DAILY_BUDGET:.2f}</span><br><br>"
+        f"<span style='font-size:0.8rem; opacity:0.8'>Version: {CONFIG_VERSION}</span>",unsafe_allow_html=True
     )
     
     # Optional: warning if fallback defaults are in use
