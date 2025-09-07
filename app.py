@@ -27,9 +27,11 @@ MIN_BULLETS = 3
 MAX_BULLETS = 5
 MAX_BULLET_WORDS = 14
 
+from typing import List
+
 class SlideModel(BaseModel):
     title: constr(strip_whitespace=True, min_length=1) = Field(...)
-    bullets: conlist(constr(strip_whitespace=True, min_length=1), min_items=0) = Field(default_factory=list)
+    bullets: List[constr(strip_whitespace=True, min_length=1)] = Field(default_factory=list)
     notes: Optional[constr(strip_whitespace=True, min_length=1)] = None
 
 class DeckJSON(BaseModel):
